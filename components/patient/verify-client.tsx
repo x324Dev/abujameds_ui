@@ -4,7 +4,11 @@ import { useState, useRef, useEffect, useMemo } from "react"
 import { useSearchParams } from "next/navigation"
 import {
   ShieldCheck, ShieldAlert, ShieldX, Camera, Search,
-  Loader2, ChevronRight, MapPin, Pill, AlertTriangle, Map as MapIcon
+  Loader2, ChevronRight, MapPin, Pill, AlertTriangle, Map as MapIcon,
+  Sparkles,
+  Activity,
+  Info,
+  BellRing
 } from "lucide-react"
 import { Card } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -17,6 +21,7 @@ import type { VerificationResult } from "@/lib/api/types"
 
 // Import your custom dynamic Map view layers
 import { MapView, type MapMarker } from "@/components/map/map-view"
+import { useDebounce } from "@/hooks/use-debounce"
 
 export interface Drug {
   id: string
@@ -52,11 +57,32 @@ interface GeocodedPartner {
   longitude: number
 }
 
+// Single, complete ExtendedSearchResponse (with search_meta)
 interface ExtendedSearchResponse {
   drug: Drug | null
   total: number
   results: GeocodedPharmacy[]
   partner_results: GeocodedPartner[]
+  search_meta?: SearchMeta
+}
+
+interface SearchMeta {
+  was_corrected: boolean
+  original_query?: string
+  corrected_query?: string
+  radius_expanded: boolean
+  radius_requested?: number
+  radius_used?: number
+  outside_radius: boolean
+  safety_note?: string
+  clarification_question?: string
+}
+
+interface Suggestion {
+  text: string
+  from_agent: boolean
+  clarification_needed: boolean
+  clarification_question?: string
 }
 
 const VERDICT_MAP = {
@@ -100,6 +126,41 @@ export function VerifyClient() {
 
   const [isScanning, setIsScanning] = useState(false)
   const scannerRef = useRef<Html5Qrcode | null>(null)
+
+  // New Search & Autocomplete State
+  const [searchRadius, setSearchRadius] = useState<number>(5)
+  const [suggestions, setSuggestions] = useState<Suggestion[]>([])
+  const [isSuggesting, setIsSuggesting] = useState(false)
+  const [showSuggestions, setShowSuggestions] = useState(false)
+  const debouncedSearchTerm = useDebounce(searchInputValue, 300)
+
+  // New Availability Alert State
+  const [alertPhone, setAlertPhone] = useState("")
+  const [isSubmittingAlert, setIsSubmittingAlert] = useState(false)
+  const [alertSuccess, setAlertSuccess] = useState(false)
+
+  // Autocomplete Effect
+  useEffect(() => {
+    async function fetchSuggestions() {
+      if (!debouncedSearchTerm.trim() || debouncedSearchTerm.length < 2) {
+        setSuggestions([])
+        return
+      }
+      setIsSuggesting(true)
+      try {
+        const res = await fetch(`/api/v1/search/drugs/suggest?q=${encodeURIComponent(debouncedSearchTerm)}`)
+        if (res.ok) {
+          const data = await res.json()
+          setSuggestions(data.suggestions || [])
+        }
+      } catch (e) {
+        console.error("Autocomplete failed", e)
+      } finally {
+        setIsSuggesting(false)
+      }
+    }
+    fetchSuggestions()
+  }, [debouncedSearchTerm])
 
   useEffect(() => {
     const tab = searchParams.get("tab")
@@ -250,6 +311,7 @@ export function VerifyClient() {
   async function executeSearch(queryText: string) {
     if (!queryText.trim()) return
     setLoading(true)
+    setShowSuggestions(false) // Hide dropdown on submit
     setVerificationResult(null)
     setSearchResult(null)
     setActiveMarkerId(null)
@@ -257,8 +319,9 @@ export function VerifyClient() {
     try {
       const lat = localStorage.getItem("user_lat") || "9.0578"
       const lng = localStorage.getItem("user_lng") || "7.4951"
+      // Updated to use dynamic searchRadius
       const res = await fetch(
-        `/api/v1/search/drugs?q=${encodeURIComponent(queryText.trim())}&lat=${lat}&lng=${lng}&radius_km=10`
+        `/api/v1/search/drugs?q=${encodeURIComponent(queryText.trim())}&lat=${lat}&lng=${lng}&radius_km=${searchRadius}`
       )
       if (!res.ok) throw new Error()
       const data = await res.json()
@@ -326,18 +389,89 @@ export function VerifyClient() {
               )}
             </TabsContent>
 
-            <TabsContent value="search" className="pt-2">
-              <form onSubmit={(e) => { e.preventDefault(); executeSearch(searchInputValue); }} className="flex gap-2">
-                <Input
-                  value={searchInputValue}
-                  onChange={(e) => setSearchInputValue(e.target.value)}
-                  placeholder="What generic or brand name are you looking for?"
-                  className="bg-white h-11"
-                />
-                <Button type="submit" disabled={loading} className="h-11 px-5">
-                  {loading ? <Loader2 className="animate-spin size-4" /> : "Locate"}
-                </Button>
-              </form>
+
+            <TabsContent value="search" className="pt-2 space-y-4">
+              {/* Search Bar & Autocomplete Palette */}
+              <div className="relative">
+                <form onSubmit={(e) => { e.preventDefault(); executeSearch(searchInputValue); }} className="flex gap-2 relative z-20">
+                  <div className="relative flex-1">
+                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-4 text-slate-400" />
+                    <Input
+                      value={searchInputValue}
+                      onChange={(e) => {
+                        setSearchInputValue(e.target.value)
+                        setShowSuggestions(true)
+                      }}
+                      onFocus={() => setShowSuggestions(true)}
+                      onBlur={() => setTimeout(() => setShowSuggestions(false), 200)} // Delay hides to allow clicks
+                      placeholder="Search generic or brand name..."
+                      className="bg-white h-12 pl-10 pr-4 rounded-xl border-slate-200 shadow-sm focus-visible:ring-indigo-500"
+                    />
+                    {isSuggesting && (
+                      <Loader2 className="absolute right-3 top-1/2 -translate-y-1/2 size-4 text-slate-400 animate-spin" />
+                    )}
+                  </div>
+                  <Button type="submit" disabled={loading} className="h-12 px-6 rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-bold shadow-sm">
+                    {loading ? <Loader2 className="animate-spin size-4" /> : "Locate"}
+                  </Button>
+                </form>
+
+                {/* Floating Suggestions Dropdown */}
+                {showSuggestions && suggestions.length > 0 && (
+                  <div className="absolute top-[calc(100%+8px)] left-0 right-0 z-50 bg-white rounded-2xl border border-slate-200/60 shadow-xl overflow-hidden animate-in fade-in slide-in-from-top-2 duration-200">
+                    <ul className="max-h-64 overflow-y-auto p-1">
+                      {suggestions.map((sugg, idx) => (
+                        <li key={idx}>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSearchInputValue(sugg.text)
+                              executeSearch(sugg.text)
+                            }}
+                            className="w-full text-left px-4 py-3 hover:bg-slate-50 rounded-xl transition-colors flex flex-col gap-1"
+                          >
+                            <div className="flex items-center gap-2">
+                              <span className="font-semibold text-slate-700">{sugg.text}</span>
+                              {sugg.from_agent && (
+                                <span className="inline-flex items-center gap-1 bg-purple-50 text-purple-700 text-[10px] font-bold px-2 py-0.5 rounded-full border border-purple-100">
+                                  <Sparkles className="size-3" /> AI Suggestion
+                                </span>
+                              )}
+                            </div>
+                            {sugg.clarification_needed && sugg.clarification_question && (
+                              <span className="text-xs text-amber-600 font-medium italic">
+                                ↳ {sugg.clarification_question}
+                              </span>
+                            )}
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </div>
+
+              {/* Segmented Radius Control */}
+              <div className="flex items-center justify-between bg-slate-50 border border-slate-200/60 rounded-xl p-1.5">
+                <span className="text-xs font-bold text-slate-500 uppercase tracking-wider pl-3">Search Radius</span>
+                <div className="flex items-center gap-1">
+                  {[5, 10, 20, 30].map((r) => (
+                    <button
+                      key={r}
+                      type="button"
+                      onClick={() => setSearchRadius(r)}
+                      className={cn(
+                        "px-3 py-1.5 text-xs font-bold rounded-lg transition-all",
+                        searchRadius === r
+                          ? "bg-white text-indigo-600 shadow-sm border border-slate-200"
+                          : "text-slate-500 hover:bg-slate-200/50 hover:text-slate-700 border border-transparent"
+                      )}
+                    >
+                      {r}km
+                    </button>
+                  ))}
+                </div>
+              </div>
             </TabsContent>
           </Tabs>
 
@@ -420,235 +554,333 @@ export function VerifyClient() {
           {/* Search Result Stack */}
           {searchResult && (
             <div className="space-y-4">
+
               {searchResult.drug && (
                 <div className="bg-slate-50 p-5 rounded-2xl border border-slate-200/60 space-y-4">
                   {/* Brand Header & Control Indicator */}
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="flex items-center gap-3">
-                      <div className="p-2 bg-white rounded-xl border border-slate-100 shadow-sm">
-                        <Pill className="text-indigo-600 size-5 shrink-0" />
-                      </div>
-                      <div>
-                        <span className="text-[10px] uppercase tracking-wider font-bold text-indigo-500">Generic Formulation</span>
-                        <p className="font-extrabold text-slate-900 text-base leading-tight">
-                          {searchResult.drug.generic_name}
-                          {searchResult.drug.strength && ` (${searchResult.drug.strength})`}
-                        </p>
-                      </div>
-                    </div>
-                    {searchResult.drug.is_controlled && (
-                      <span className="inline-flex items-center gap-1 bg-rose-50 border border-rose-200 text-rose-700 text-[10px] font-bold px-2 py-1 rounded-md shadow-2xs shrink-0">
-                        <AlertTriangle className="size-3 text-rose-500" /> Controlled
-                      </span>
-                    )}
-                  </div>
+                  {searchResult.search_meta && (
+                    <div className="space-y-2 animate-in fade-in duration-300">
+                      {/* Autocorrect / Expansion Insight */}
+                      {(searchResult.search_meta.was_corrected || searchResult.search_meta.radius_expanded) && (
+                        <div className="flex items-start gap-3 bg-indigo-50/50 border border-indigo-100 p-3 rounded-xl">
+                          <Sparkles className="size-4 text-indigo-500 shrink-0 mt-0.5" />
+                          <div className="text-sm font-medium text-indigo-900 leading-snug">
+                            {searchResult.search_meta.was_corrected && (
+                              <span className="block">Showing matches for <span className="font-bold underline decoration-indigo-200 underline-offset-2">{searchResult.search_meta.corrected_query}</span> (instead of "{searchResult.search_meta.original_query}").</span>
+                            )}
+                            {searchResult.search_meta.radius_expanded && (
+                              <span className="block opacity-80 mt-0.5">Expanded search from {searchResult.search_meta.radius_requested}km to {searchResult.search_meta.radius_used}km to find stock.</span>
+                            )}
+                          </div>
+                        </div>
+                      )}
 
-                  {/* Brand Names Tags */}
-                  {searchResult.drug.brand_names && searchResult.drug.brand_names.length > 0 && (
-                    <div className="flex flex-wrap gap-1.5">
-                      {searchResult.drug.brand_names.map((brand, i) => (
-                        <span key={i} className="inline-flex items-center text-xs font-semibold bg-white border border-slate-200 text-slate-700 px-2.5 py-0.5 rounded-lg">
-                          {brand}
-                        </span>
-                      ))}
+                      {/* Out of Bounds Warning */}
+                      {searchResult.search_meta.outside_radius && (
+                        <div className="flex items-start gap-3 bg-amber-50 border border-amber-200/60 p-3 rounded-xl">
+                          <MapPin className="size-4 text-amber-600 shrink-0 mt-0.5" />
+                          <p className="text-sm font-medium text-amber-900 leading-snug">
+                            These pharmacies are outside your chosen {searchRadius}km area. Nearest available stock shown.
+                          </p>
+                        </div>
+                      )}
+
+                      {/* Clinical Safety Note / Clarification */}
+                      {(searchResult.search_meta.safety_note || searchResult.search_meta.clarification_question) && (
+                        <div className="flex items-start gap-3 bg-rose-50 border border-rose-100 p-3 rounded-xl">
+                          <Info className="size-4 text-rose-600 shrink-0 mt-0.5" />
+                          <div className="text-sm font-medium text-rose-900 leading-snug">
+                            {searchResult.search_meta.safety_note && <span className="block">{searchResult.search_meta.safety_note}</span>}
+                            {searchResult.search_meta.clarification_question && <span className="block mt-1 font-bold">{searchResult.search_meta.clarification_question}</span>}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )}
 
-                  {/* Comprehensive Drug Information Grid */}
-                  <div className="grid grid-cols-2 gap-x-4 gap-y-3 pt-3.5 border-t border-slate-200/60 text-xs">
-                    {searchResult.drug.manufacturer && (
-                      <div>
-                        <span className="block text-[10px] uppercase tracking-wider font-bold text-slate-400 mb-0.5">Manufacturer Company</span>
-                        <span className="font-bold text-slate-800">{searchResult.drug.manufacturer}</span>
+                  {/* Drug Primary Info Card */}
+                  <div className="bg-slate-50 p-5 rounded-2xl border border-slate-200/60 space-y-4 relative overflow-hidden">
+                    <div className="flex items-start justify-between gap-4 relative z-10">
+                      <div className="flex items-center gap-3">
+                        <div className="p-2 bg-white rounded-xl border border-slate-100 shadow-sm">
+                          <Pill className="text-indigo-600 size-5 shrink-0" />
+                        </div>
+                        <div>
+                          <span className="text-[10px] uppercase tracking-wider font-bold text-indigo-500">Generic Formulation</span>
+                          <p className="font-extrabold text-slate-900 text-base leading-tight">
+                            {searchResult.drug.generic_name}
+                            {searchResult.drug.strength && ` (${searchResult.drug.strength})`}
+                          </p>
+                        </div>
+                      </div>
+
+                      {/* Integrated Interaction Action */}
+                      <div className="flex flex-col items-end gap-2">
+                        {searchResult.drug.is_controlled && (
+                          <span className="inline-flex items-center gap-1 bg-rose-50 border border-rose-200 text-rose-700 text-[10px] font-bold px-2 py-1 rounded-md shadow-2xs shrink-0">
+                            <AlertTriangle className="size-3 text-rose-500" /> Controlled
+                          </span>
+                        )}
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-8 px-3 text-xs font-bold border-indigo-200 text-indigo-700 hover:bg-indigo-50"
+                          onClick={() => toast.info("Interaction modal triggering...")} // Replace with actual trigger
+                        >
+                          <Activity className="size-3.5 mr-1.5" /> Check Interactions
+                        </Button>
+                      </div>
+                    </div>
+
+                    {/* Brand Names Tags */}
+                    {searchResult.drug.brand_names && searchResult.drug.brand_names.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5">
+                        {searchResult.drug.brand_names.map((brand, i) => (
+                          <span key={i} className="inline-flex items-center text-xs font-semibold bg-white border border-slate-200 text-slate-700 px-2.5 py-0.5 rounded-lg">
+                            {brand}
+                          </span>
+                        ))}
                       </div>
                     )}
 
-                    {searchResult.drug.nafdac_number && (
-                      <div>
-                        <span className="block text-[10px] uppercase tracking-wider font-bold text-slate-400 mb-0.5">NAFDAC Reg No</span>
-                        <span className="font-mono font-bold text-slate-800 bg-white px-1.5 py-0.5 rounded border border-slate-200/40 inline-block">
-                          {searchResult.drug.nafdac_number}
-                        </span>
-                      </div>
-                    )}
+                    {/* Comprehensive Drug Information Grid */}
+                    <div className="grid grid-cols-2 gap-x-4 gap-y-3 pt-3.5 border-t border-slate-200/60 text-xs">
+                      {searchResult.drug.manufacturer && (
+                        <div>
+                          <span className="block text-[10px] uppercase tracking-wider font-bold text-slate-400 mb-0.5">Manufacturer Company</span>
+                          <span className="font-bold text-slate-800">{searchResult.drug.manufacturer}</span>
+                        </div>
+                      )}
 
-                    {searchResult.drug.dosage_form && (
-                      <div>
-                        <span className="block text-[10px] uppercase tracking-wider font-bold text-slate-400 mb-0.5">Dosage Form</span>
-                        <span className="font-semibold text-slate-700">{searchResult.drug.dosage_form}</span>
-                      </div>
-                    )}
+                      {searchResult.drug.nafdac_number && (
+                        <div>
+                          <span className="block text-[10px] uppercase tracking-wider font-bold text-slate-400 mb-0.5">NAFDAC Reg No</span>
+                          <span className="font-mono font-bold text-slate-800 bg-white px-1.5 py-0.5 rounded border border-slate-200/40 inline-block">
+                            {searchResult.drug.nafdac_number}
+                          </span>
+                        </div>
+                      )}
 
-                    {searchResult.drug.drug_category && (
-                      <div>
-                        <span className="block text-[10px] uppercase tracking-wider font-bold text-slate-400 mb-0.5">Classification</span>
-                        <span className="font-semibold text-slate-700">{searchResult.drug.drug_category}</span>
+                      {searchResult.drug.dosage_form && (
+                        <div>
+                          <span className="block text-[10px] uppercase tracking-wider font-bold text-slate-400 mb-0.5">Dosage Form</span>
+                          <span className="font-semibold text-slate-700">{searchResult.drug.dosage_form}</span>
+                        </div>
+                      )}
+
+                      {searchResult.drug.drug_category && (
+                        <div>
+                          <span className="block text-[10px] uppercase tracking-wider font-bold text-slate-400 mb-0.5">Classification</span>
+                          <span className="font-semibold text-slate-700">{searchResult.drug.drug_category}</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Sub-Header Actions */}
+                  <div className="flex items-center justify-between px-1">
+                    <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">
+                      Stock Matches ({searchResult.total})
+                    </h3>
+                    {/* Mobile Map Display Toggle Action */}
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => setMobileShowMap(!mobileShowMap)}
+                      className="lg:hidden h-8 px-2.5 text-xs font-bold text-indigo-600 border-indigo-100 bg-indigo-50/50"
+                    >
+                      <MapIcon className="size-3.5 mr-1" />
+                      {mobileShowMap ? "Hide Map View" : "View Map Grid"}
+                    </Button>
+                  </div>
+
+                  {/* Mobile Inline Map Slot */}
+                  {mobileShowMap && (
+                    <div className="w-full h-64 rounded-2xl overflow-hidden border border-slate-200 lg:hidden shadow-xs">
+                      <MapView
+                        markers={compositeMapMarkers}
+                        activeId={activeMarkerId}
+                        onMarkerClick={(id) => setActiveMarkerId(id)}
+                        className="h-full w-full"
+                      />
+                    </div>
+                  )}
+
+                  {/* Pharmacy Data List */}
+                  <div className="space-y-2">
+                    {searchResult.results.length === 0 && searchResult.partner_results.length === 0 ? (
+                  
+                  /* Innovative Empty State Capture */
+                  <div className="bg-white border-2 border-dashed border-slate-200 rounded-3xl p-8 text-center flex flex-col items-center justify-center animate-in fade-in zoom-in-95 duration-400">
+                    <div className="size-14 bg-indigo-50 rounded-2xl flex items-center justify-center mb-4">
+                      <BellRing className="size-7 text-indigo-600" />
+                    </div>
+                    <h3 className="text-lg font-extrabold text-slate-900 mb-1">Out of Stock Locally</h3>
+                    <p className="text-sm text-slate-500 font-medium max-w-sm mb-6">
+                      No facilities within {searchRadius}km currently have this logged in their inventory.
+                    </p>
+                    
+                    {alertSuccess ? (
+                      <div className="bg-emerald-50 text-emerald-700 border border-emerald-200 text-sm font-bold px-4 py-3 rounded-xl flex items-center gap-2">
+                        <ShieldCheck className="size-4" /> We'll notify you when it arrives.
                       </div>
+                    ) : (
+                      <form 
+                        onSubmit={async (e) => {
+                          e.preventDefault()
+                          setIsSubmittingAlert(true)
+                          try {
+                            // Wire this to your actual /search/availability-alert endpoint
+                            await new Promise(r => setTimeout(r, 800)) 
+                            setAlertSuccess(true)
+                            toast.success("Alert active.")
+                          } finally {
+                            setIsSubmittingAlert(false)
+                          }
+                        }} 
+                        className="flex flex-col sm:flex-row w-full max-w-sm gap-2"
+                      >
+                        <Input 
+                          type="tel" 
+                          required 
+                          placeholder="Enter WhatsApp / Phone..." 
+                          value={alertPhone}
+                          onChange={(e) => setAlertPhone(e.target.value)}
+                          className="bg-slate-50 h-11 border-slate-200"
+                        />
+                        <Button type="submit" disabled={isSubmittingAlert} className="h-11 shrink-0 bg-slate-900 text-white font-bold px-5">
+                          {isSubmittingAlert ? <Loader2 className="size-4 animate-spin" /> : "Notify Me"}
+                        </Button>
+                      </form>
                     )}
                   </div>
-                </div>
-              )}
 
-              {/* Sub-Header Actions */}
-              <div className="flex items-center justify-between px-1">
-                <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">
-                  Stock Matches ({searchResult.total})
-                </h3>
-                {/* Mobile Map Display Toggle Action */}
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => setMobileShowMap(!mobileShowMap)}
-                  className="lg:hidden h-8 px-2.5 text-xs font-bold text-indigo-600 border-indigo-100 bg-indigo-50/50"
-                >
-                  <MapIcon className="size-3.5 mr-1" />
-                  {mobileShowMap ? "Hide Map View" : "View Map Grid"}
-                </Button>
-              </div>
-
-              {/* Mobile Inline Map Slot */}
-              {mobileShowMap && (
-                <div className="w-full h-64 rounded-2xl overflow-hidden border border-slate-200 lg:hidden shadow-xs">
-                  <MapView
-                    markers={compositeMapMarkers}
-                    activeId={activeMarkerId}
-                    onMarkerClick={(id) => setActiveMarkerId(id)}
-                    className="h-full w-full"
-                  />
-                </div>
-              )}
-
-              {/* Pharmacy Data List */}
-              <div className="space-y-2">
-                {searchResult.results.length === 0 && searchResult.partner_results.length === 0 ? (
-                  <p className="text-center py-8 text-sm text-slate-400">No matching stocks confirmed within range.</p>
                 ) : (
-                  <>
-                    {searchResult.results.map((pharmacy) => {
-                      const isTargeted = activeMarkerId === pharmacy.pharmacy_id
-                      return (
-                        <Card
-                          key={pharmacy.pharmacy_id}
-                          className={cn(
-                            "p-4 rounded-2xl border bg-white shadow-xs transition-all duration-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3",
-                            isTargeted ? "border-indigo-500 ring-2 ring-indigo-100 bg-indigo-50/10" : "border-slate-200/70 hover:border-slate-300"
-                          )}
-                        >
-                          <div className="space-y-1.5 min-w-0 flex-1">
-                            <div className="flex items-center justify-between gap-3 sm:justify-start">
-                              <h4 className="font-bold text-slate-950 text-base tracking-tight truncate">
-                                {pharmacy.pharmacy_name}
-                              </h4>
-                              <span className="text-base font-black text-slate-950 tracking-tight sm:hidden shrink-0">
-                                ₦{pharmacy.price_naira?.toLocaleString() ?? "—"}
-                              </span>
-                            </div>
-
-                            <p className="text-xs text-slate-500 font-medium flex items-center gap-1.5">
-                              <MapPin className="size-3.5 text-slate-400 shrink-0" />
-                              <span className="truncate max-w-[150px] xs:max-w-[220px] sm:max-w-none">
-                                {pharmacy.address || "Address omitted"}
-                              </span>
-                              <span className="text-slate-300 font-light shrink-0">|</span>
-                              <span className="font-bold text-indigo-600 shrink-0">
-                                {pharmacy.distance_km.toFixed(1)} km out
-                              </span>
-                            </p>
-
-                            <div className="flex items-center justify-between pt-1 gap-2 flex-wrap">
-                              <div className="flex flex-wrap gap-1.5">
-                                <span className={cn(
-                                  "inline-flex items-center text-[10px] font-bold px-2 py-0.5 rounded-md border",
-                                  pharmacy.stock_status === 'in_stock' ? "bg-emerald-50 border-emerald-100 text-emerald-700" : "bg-amber-50 border-amber-100 text-amber-700"
-                                )}>
-                                  {pharmacy.quantity_in_stock ?? 0} left
-                                </span>
-                                {pharmacy.is_pcn_verified && (
-                                  <span className="inline-flex items-center text-[10px] font-bold bg-blue-50 border border-blue-100 text-blue-700 px-2 py-0.5 rounded-md">
-                                    PCN Verified
+                      <>
+                        {searchResult.results.map((pharmacy) => {
+                          const isTargeted = activeMarkerId === pharmacy.pharmacy_id
+                          return (
+                            <Card
+                              key={pharmacy.pharmacy_id}
+                              className={cn(
+                                "p-4 rounded-2xl border bg-white shadow-xs transition-all duration-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3",
+                                isTargeted ? "border-indigo-500 ring-2 ring-indigo-100 bg-indigo-50/10" : "border-slate-200/70 hover:border-slate-300"
+                              )}
+                            >
+                              <div className="space-y-1.5 min-w-0 flex-1">
+                                <div className="flex items-center justify-between gap-3 sm:justify-start">
+                                  <h4 className="font-bold text-slate-950 text-base tracking-tight truncate">
+                                    {pharmacy.pharmacy_name}
+                                  </h4>
+                                  <span className="text-base font-black text-slate-950 tracking-tight sm:hidden shrink-0">
+                                    ₦{pharmacy.price_naira?.toLocaleString() ?? "—"}
                                   </span>
-                                )}
+                                </div>
+
+                                <p className="text-xs text-slate-500 font-medium flex items-center gap-1.5">
+                                  <MapPin className="size-3.5 text-slate-400 shrink-0" />
+                                  <span className="truncate max-w-[150px] xs:max-w-[220px] sm:max-w-none">
+                                    {pharmacy.address || "Address omitted"}
+                                  </span>
+                                  <span className="text-slate-300 font-light shrink-0">|</span>
+                                  <span className="font-bold text-indigo-600 shrink-0">
+                                    {pharmacy.distance_km.toFixed(1)} km out
+                                  </span>
+                                </p>
+
+                                <div className="flex items-center justify-between pt-1 gap-2 flex-wrap">
+                                  <div className="flex flex-wrap gap-1.5">
+                                    <span className={cn(
+                                      "inline-flex items-center text-[10px] font-bold px-2 py-0.5 rounded-md border",
+                                      pharmacy.stock_status === 'in_stock' ? "bg-emerald-50 border-emerald-100 text-emerald-700" : "bg-amber-50 border-amber-100 text-amber-700"
+                                    )}>
+                                      {pharmacy.quantity_in_stock ?? 0} left
+                                    </span>
+                                    {pharmacy.is_pcn_verified && (
+                                      <span className="inline-flex items-center text-[10px] font-bold bg-blue-50 border border-blue-100 text-blue-700 px-2 py-0.5 rounded-md">
+                                        PCN Verified
+                                      </span>
+                                    )}
+                                  </div>
+
+                                  {/* Interactive Focus Tracking Map Target Trigger Pin */}
+                                  <Button
+                                    size="sm"
+                                    variant={isTargeted ? "default" : "outline"}
+                                    onClick={() => {
+                                      setActiveMarkerId(pharmacy.pharmacy_id)
+                                      if (!mobileShowMap) setMobileShowMap(true)
+                                    }}
+                                    className="h-7 px-2.5 text-[11px] font-bold rounded-lg transition-all"
+                                  >
+                                    <MapIcon className="size-3 mr-1" />
+                                    {isTargeted ? "Selected on Map" : "Find on Map"}
+                                  </Button>
+                                </div>
                               </div>
 
-                              {/* Interactive Focus Tracking Map Target Trigger Pin */}
-                              <Button
-                                size="sm"
-                                variant={isTargeted ? "default" : "outline"}
-                                onClick={() => {
-                                  setActiveMarkerId(pharmacy.pharmacy_id)
-                                  if (!mobileShowMap) setMobileShowMap(true)
-                                }}
-                                className="h-7 px-2.5 text-[11px] font-bold rounded-lg transition-all"
-                              >
-                                <MapIcon className="size-3 mr-1" />
-                                {isTargeted ? "Selected on Map" : "Find on Map"}
-                              </Button>
-                            </div>
-                          </div>
+                              <div className="hidden sm:block text-right shrink-0 pl-4 border-l border-slate-100 min-w-[100px]">
+                                <span className="block text-[10px] uppercase tracking-wider font-bold text-slate-400 mb-0.5">Price</span>
+                                <p className="text-lg font-black text-slate-950 tracking-tight">
+                                  ₦{pharmacy.price_naira?.toLocaleString() ?? "—"}
+                                </p>
+                              </div>
+                            </Card>
+                          )
+                        })}
 
-                          <div className="hidden sm:block text-right shrink-0 pl-4 border-l border-slate-100 min-w-[100px]">
-                            <span className="block text-[10px] uppercase tracking-wider font-bold text-slate-400 mb-0.5">Price</span>
-                            <p className="text-lg font-black text-slate-950 tracking-tight">
-                              ₦{pharmacy.price_naira?.toLocaleString() ?? "—"}
-                            </p>
-                          </div>
-                        </Card>
-                      )
-                    })}
-
-                    {/* Partners Layout Panel */}
-                    {searchResult.partner_results.map((partner, index) => {
-                      const pId = `partner-${index}`
-                      const isTargeted = activeMarkerId === pId
-                      return (
-                        <Card key={index} className={cn(
-                          "p-4 flex items-center justify-between rounded-2xl border shadow-sm transition-all",
-                          isTargeted ? "border-purple-500 ring-2 ring-purple-100 bg-purple-50/30" : "border-purple-100 bg-purple-50/15"
-                        )}>
-                          <div className="space-y-1.5 min-w-0 flex-1">
-                            <div className="flex items-center gap-1.5 flex-wrap">
-                              <h4 className="font-bold text-purple-950 text-base truncate">{partner.pharmacy_name}</h4>
-                              <span className="bg-purple-100 text-purple-700 font-extrabold text-[9px] px-1.5 py-0.5 rounded uppercase tracking-wide">Partner Channel</span>
-                            </div>
-                            <div className="flex items-center justify-between pr-2">
-                              <p className="text-xs text-slate-500 font-medium">{partner.distance_km.toFixed(1)} km out</p>
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                onClick={() => {
-                                  setActiveMarkerId(pId)
-                                  if (!mobileShowMap) setMobileShowMap(true)
-                                }}
-                                className="h-6 text-[10px] font-bold text-purple-700 hover:bg-purple-100/50 px-2"
-                              >
-                                <MapIcon className="size-2.5 mr-1" /> Map
-                              </Button>
-                            </div>
-                          </div>
-                          {partner.partner_url && (
-                            <a href={partner.partner_url} target="_blank" rel="noopener noreferrer" className="p-2 hover:bg-purple-100/50 rounded-xl transition-colors shrink-0">
-                              <ChevronRight className="size-5 text-purple-600" />
-                            </a>
-                          )}
-                        </Card>
-                      )
-                    })}
-                  </>
-                )}
-              </div>
-            </div>
-          )}
-        </div>
+                        {/* Partners Layout Panel */}
+                        {searchResult.partner_results.map((partner, index) => {
+                          const pId = `partner-${index}`
+                          const isTargeted = activeMarkerId === pId
+                          return (
+                            <Card key={index} className={cn(
+                              "p-4 flex items-center justify-between rounded-2xl border shadow-sm transition-all",
+                              isTargeted ? "border-purple-500 ring-2 ring-purple-100 bg-purple-50/30" : "border-purple-100 bg-purple-50/15"
+                            )}>
+                              <div className="space-y-1.5 min-w-0 flex-1">
+                                <div className="flex items-center gap-1.5 flex-wrap">
+                                  <h4 className="font-bold text-purple-950 text-base truncate">{partner.pharmacy_name}</h4>
+                                  <span className="bg-purple-100 text-purple-700 font-extrabold text-[9px] px-1.5 py-0.5 rounded uppercase tracking-wide">Partner Channel</span>
+                                </div>
+                                <div className="flex items-center justify-between pr-2">
+                                  <p className="text-xs text-slate-500 font-medium">{partner.distance_km.toFixed(1)} km out</p>
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    onClick={() => {
+                                      setActiveMarkerId(pId)
+                                      if (!mobileShowMap) setMobileShowMap(true)
+                                    }}
+                                    className="h-6 text-[10px] font-bold text-purple-700 hover:bg-purple-100/50 px-2"
+                                  >
+                                    <MapIcon className="size-2.5 mr-1" /> Map
+                                  </Button>
+                                </div>
+                              </div>
+                              {partner.partner_url && (
+                                <a href={partner.partner_url} target="_blank" rel="noopener noreferrer" className="p-2 hover:bg-purple-100/50 rounded-xl transition-colors shrink-0">
+                                  <ChevronRight className="size-5 text-purple-600" />
+                                </a>
+                              )}
+                            </Card>
+                          )
+                        })}
+                      </>
+                    )}
+                  </div> {/* closes pharmacy data list */}
+                </div> 
+              )}
+            </div> 
+          )} {/* closes searchResult conditional */}
+        </div> {/* closes left column */}
 
         {/* Right Side: Sticky Large-Viewport Desktop Map Workspace */}
         {searchResult && (
           <div className="hidden lg:block lg:col-span-5 xl:col-span-6 relative">
-            {/* top-32: Locks the map directly parallel to your search results, perfectly clearing the header.
-              h-[calc(100vh-14rem)]: Calculates exactly how tall the map should be so it stops stretching before it hits the footer.
-            */}
             <div className="sticky top-32 z-10 w-full h-[calc(100vh-14rem)] min-h-[480px] rounded-3xl overflow-hidden border border-slate-200/60 shadow-sm bg-slate-50">
-              <MapView 
-                markers={compositeMapMarkers} 
+              <MapView
+                markers={compositeMapMarkers}
                 activeId={activeMarkerId}
                 onMarkerClick={(id) => setActiveMarkerId(id)}
                 className="h-full w-full"
@@ -657,7 +889,7 @@ export function VerifyClient() {
           </div>
         )}
 
-      </div>
-    </div>
+      </div> 
+    </div> 
   )
 }
