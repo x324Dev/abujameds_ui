@@ -9,13 +9,14 @@ export default function FacilitiesPage() {
   const [specialization, setSpecialization] = useState<string>("")
 
   return (
-    <div className="flex min-h-dvh flex-col bg-background">
+    // Moved top padding here to account for the fixed header height cleanly
+    <div className="flex min-h-dvh flex-col bg-background pt-24 md:pt-28 lg:pt-32">
       
       <main className="flex-1 pb-12">
         {/* Specialization Control Area */}
-        <div className="mx-auto w-full max-w-6xl px-4 pt-6">
-          <div className="rounded-2xl border bg-card p-4 shadow-sm">
-            <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground block mb-2">
+        <div className="mx-auto w-full max-w-7xl px-4 sm:px-6">
+          <div className="rounded-2xl border border-slate-100 bg-white p-5 shadow-sm">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 block mb-2.5">
               Filter by Medical Specialization
             </span>
             <SpecializationSelector 
