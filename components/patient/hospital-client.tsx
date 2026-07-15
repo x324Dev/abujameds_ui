@@ -13,7 +13,8 @@ import {
   List as ListIcon, 
   Navigation,
   Activity,
-  X 
+  X,
+  ArrowUpRight
 } from "lucide-react"
 import { Card } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -79,7 +80,7 @@ export function HospitalClient({ specialization }: { specialization?: string }) 
 
   const hospitals = Array.isArray(data) ? data : []
 
-  // TypeScript-Safe Coordinate Mapping
+  // TypeScript-Safe Coordinate Mapping for the inline leaflet map view
   const markers: MapMarker[] = hospitals
     .filter(
       (h): h is typeof h & { latitude: number; longitude: number } =>
@@ -101,9 +102,8 @@ export function HospitalClient({ specialization }: { specialization?: string }) 
     })
 
   return (
-    // 3. REMOVED EXCESS TOP PADDING (NOW DELEGATED TO PARENT)
-    // <div className="mx-auto w-full max-w-7xl px-4 sm:px-6 pt-6 pb-8">
-     <div className="mx-auto w-full max-w-7xl px-4 sm:px-6 pt-24 md:pt-28 lg:pt-32 pb-8"> 
+    <div className="mx-auto w-full max-w-7xl px-4 sm:px-6 pt-24 md:pt-28 lg:pt-32 pb-8"> 
+      
       {/* Dynamic Sub-Header Info */}
       <div className="flex flex-col md:flex-row md:items-end justify-between gap-4 border-b border-slate-100 pb-6">
         <div className="space-y-1">
@@ -120,6 +120,7 @@ export function HospitalClient({ specialization }: { specialization?: string }) 
         {/* Mobile View Toggle */}
         <div className="flex lg:hidden bg-slate-100/80 p-1 rounded-xl w-full sm:w-auto shrink-0 border border-slate-200/40">
           <button
+            type="button"
             onClick={() => setMobileView("list")}
             className={cn(
               "flex-1 sm:flex-initial flex items-center justify-center gap-2 px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer",
@@ -130,6 +131,7 @@ export function HospitalClient({ specialization }: { specialization?: string }) 
             <span>List View ({hospitals.length})</span>
           </button>
           <button
+            type="button"
             onClick={() => setMobileView("map")}
             className={cn(
               "flex-1 sm:flex-initial flex items-center justify-center gap-2 px-4 py-2 rounded-lg text-xs font-bold transition-all cursor-pointer",
@@ -155,6 +157,7 @@ export function HospitalClient({ specialization }: { specialization?: string }) 
           />
           {query && (
             <button
+              type="button"
               onClick={() => setQuery("")}
               className="absolute right-4 top-1/2 -translate-y-1/2 p-0.5 hover:bg-slate-100 rounded-full text-slate-400 hover:text-slate-600 transition-all cursor-pointer"
               aria-label="Clear search input"
@@ -237,6 +240,12 @@ export function HospitalClient({ specialization }: { specialization?: string }) 
               const hasEmergencyCapability = h.services?.includes("24_hour_emergency")
               const isSelected = activeId === h.id
               
+              // SEMANTIC DIRECT QUERY BUILDER (Resolves highly-accurate location matching in Google Maps search indices)
+              const mapSearchQuery = encodeURIComponent(
+                `${h.name}, ${h.area_council || "Abuja"}, Abuja, FCT, Nigeria`
+              )
+              const directionsUrl = `https://www.google.com/maps/search/?api=1&query=${mapSearchQuery}`
+              
               return (
                 <Card
                   key={h.id}
@@ -284,18 +293,42 @@ export function HospitalClient({ specialization }: { specialization?: string }) 
                       )}
                     </div>
                     
-                    {h.phone && (
+                    {/* Compact Interactive Action Blocks */}
+                    <div 
+                      className="flex items-center gap-2 shrink-0" 
+                      onClick={(e) => e.stopPropagation()} // Prevents card active state switching on button clicks
+                    >
+                      {/* Direct Navigation Button */}
                       <Button 
                         size="icon" 
                         variant="outline" 
-                        className="shrink-0 size-11 rounded-full border-slate-200/80 hover:bg-slate-50 hover:text-slate-900 transition-all cursor-pointer active:scale-95"
-                        onClick={(e) => e.stopPropagation()}
+                        className="shrink-0 size-11 rounded-full border-slate-200/80 hover:bg-slate-50 hover:text-slate-900 hover:border-emerald-200 transition-all cursor-pointer active:scale-95"
                       >
-                        <a href={`tel:${h.phone}`} aria-label={`Call medical desk at ${h.name}`}>
-                          <Phone className="h-4 w-4 text-slate-500" />
+                        <a 
+                          href={directionsUrl} 
+                          target="_blank" 
+                          rel="noopener noreferrer" 
+                          title="Open Location Route in Google Maps"
+                          aria-label={`Get directions to ${h.name} on Google Maps`}
+                        >
+                          <Navigation className="h-4 w-4 text-emerald-600" />
                         </a>
                       </Button>
-                    )}
+
+                      {/* Immediate Calling Button */}
+                      {h.phone && (
+                        <Button 
+                          size="icon" 
+                          variant="outline" 
+                          className="shrink-0 size-11 rounded-full border-slate-200/80 hover:bg-slate-50 hover:text-slate-900 transition-all cursor-pointer active:scale-95"
+                          
+                        >
+                          <a href={`tel:${h.phone}`} aria-label={`Call medical desk at ${h.name}`}>
+                            <Phone className="h-4 w-4 text-slate-500" />
+                          </a>
+                        </Button>
+                      )}
+                    </div>
                   </div>
                 </Card>
               )
